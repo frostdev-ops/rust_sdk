@@ -1,0 +1,718 @@
+#[cfg(feature = "redis_cache")]
+use crate::cache::{CacheConfig, CacheError, CacheResult, CacheService, CacheStats, CacheType};
+#[cfg(feature = "redis_cache")]
+use async_trait::async_trait;
+#[cfg(feature = "redis_cache")]
+use redis::{
+    aio::ConnectionManager, AsyncCommands, Client, ErrorKind, FromRedisValue, RedisError,
+    RedisResult, Script, ToRedisArgs, Value as RedisValue,
+};
+#[cfg(feature = "redis_cache")]
+use std::collections::HashMap;
+#[cfg(feature = "redis_cache")]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "redis_cache")]
+use std::sync::Arc;
+#[cfg(feature = "redis_cache")]
+use std::time::Duration;
+#[cfg(feature = "redis_cache")]
+use uuid::Uuid;
+
+/// Redis cache implementation
+#[cfg(feature = "redis_cache")]
+pub struct RedisCache {
+    /// Redis connection manager
+    connection: Arc<ConnectionManager>,
+    /// Default TTL for cache entries
+    default_ttl: Duration,
+    /// Namespace prefix for cache keys
+    namespace: Option<String>,
+    /// Cache hit counter
+    hits: Arc<AtomicU64>,
+    /// Cache miss counter
+    misses: Arc<AtomicU64>,
+}
+
+#[cfg(not(feature = "redis_cache"))]
+pub struct RedisCache;
+
+impl RedisCache {
+    /// Connect to Redis using the provided configuration
+    pub async fn connect(config: &CacheConfig) -> CacheResult<Self> {
+        #[cfg(feature = "redis_cache")]
+        {
+            // Build server list
+            let server = if config.hosts.is_empty() {
+                "127.0.0.1".to_string()
+            } else {
+                config.hosts[0].clone()
+            };
+
+            // Add port if specified
+            let server_with_port = if let Some(port) = config.port {
+                format!("{}:{}", server, port)
+            } else {
+                // Default Redis port
+                format!("{}:6379", server)
+            };
+
+            // Build Redis URL
+            let mut redis_url = format!("redis://{}", server_with_port);
+
+            // Add credentials if provided
+            if let (Some(username), Some(password)) = (&config.username, &config.password) {
+                redis_url = format!("redis://{}:{}@{}", username, password, server_with_port);
+            } else if let Some(password) = &config.password {
+                redis_url = format!("redis://:{}@{}", password, server_with_port);
+            }
+
+            // Create client
+            let client = Client::open(redis_url.clone()).map_err(|e| {
+                map_redis_error(e, &format!("Failed to connect to Redis at {}", redis_url))
+            })?;
+
+            // Create connection manager
+            let connection = ConnectionManager::new(client)
+                .await
+                .map_err(|e| map_redis_error(e, "Failed to create Redis connection manager"))?;
+
+            Ok(Self {
+                connection: Arc::new(connection),
+                default_ttl: config.get_default_ttl(),
+                namespace: config.namespace.clone(),
+                hits: Arc::new(AtomicU64::new(0)),
+                misses: Arc::new(AtomicU64::new(0)),
+            })
+        }
+
+        #[cfg(not(feature = "redis_cache"))]
+        {
+            Err(CacheError::Connection("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+        }
+    }
+
+    /// Add namespace prefix to key if configured
+    fn prefix_key(&self, key: &str) -> String {
+        if let Some(ns) = &self.namespace {
+            format!("{}:{}", ns, key)
+        } else {
+            key.to_string()
+        }
+    }
+
+    /// Strip namespace prefix from key if needed
+    fn strip_prefix(&self, key: &str) -> String {
+        if let Some(ns) = &self.namespace {
+            let prefix = format!("{}:", ns);
+            if key.starts_with(&prefix) {
+                key[prefix.len()..].to_string()
+            } else {
+                key.to_string()
+            }
+        } else {
+            key.to_string()
+        }
+    }
+
+    /// Convert Redis error to CacheError
+    fn convert_error(err: RedisError) -> CacheError {
+        match err.kind() {
+            redis::ErrorKind::IoError => {
+                CacheError::Connection(format!("Redis I/O error: {}", err))
+            }
+            redis::ErrorKind::AuthenticationFailed => {
+                CacheError::Connection(format!("Redis authentication failed: {}", err))
+            }
+            redis::ErrorKind::ResponseError => {
+                CacheError::Operation(format!("Redis response error: {}", err))
+            }
+            redis::ErrorKind::ClientError => {
+                CacheError::Operation(format!("Redis client error: {}", err))
+            }
+            redis::ErrorKind::ExtensionError => {
+                CacheError::Operation(format!("Redis extension error: {}", err))
+            }
+            redis::ErrorKind::TypeError => {
+                CacheError::Operation(format!("Redis type error: {}", err))
+            }
+            redis::ErrorKind::ExecAbortError => {
+                CacheError::Operation(format!("Redis exec abort error: {}", err))
+            }
+            redis::ErrorKind::BusyLoadingError => {
+                CacheError::Operation(format!("Redis busy loading: {}", err))
+            }
+            redis::ErrorKind::InvalidClientConfig => {
+                CacheError::Configuration(format!("Redis invalid client config: {}", err))
+            }
+            redis::ErrorKind::Moved => CacheError::Operation(format!("Redis moved error: {}", err)),
+            redis::ErrorKind::Ask => CacheError::Operation(format!("Redis ask error: {}", err)),
+            redis::ErrorKind::TryAgain => {
+                CacheError::Operation(format!("Redis try again: {}", err))
+            }
+            redis::ErrorKind::ClusterDown => {
+                CacheError::Connection(format!("Redis cluster down: {}", err))
+            }
+            redis::ErrorKind::CrossSlot => {
+                CacheError::Operation(format!("Redis cross slot: {}", err))
+            }
+            redis::ErrorKind::MasterDown => {
+                CacheError::Connection(format!("Redis master down: {}", err))
+            }
+            redis::ErrorKind::NotBusy => CacheError::Operation(format!("Redis not busy: {}", err)),
+            _ => CacheError::Operation(format!("Redis error: {}", err)),
+        }
+    }
+}
+
+impl From<RedisError> for CacheError {
+    fn from(err: RedisError) -> Self {
+        CacheError::Connection(format!("Redis error: {}", err))
+    }
+}
+
+/// Map Redis errors to CacheError
+#[cfg(feature = "redis_cache")]
+fn map_redis_error(err: RedisError, context: &str) -> CacheError {
+    match err.kind() {
+        ErrorKind::IoError => {
+            CacheError::Connection(format!("{}: {} (IO error)", context, err))
+        }
+        ErrorKind::AuthenticationFailed => {
+            CacheError::Connection(format!("{}: {} (Authentication failed)", context, err))
+        }
+        ErrorKind::ResponseError => {
+            CacheError::Operation(format!("{}: {} (Response error)", context, err))
+        }
+        ErrorKind::ClientError => {
+            CacheError::Operation(format!("{}: {} (Client error)", context, err))
+        }
+        ErrorKind::ExtensionError => {
+            CacheError::Operation(format!("{}: {} (Extension error)", context, err))
+        }
+        ErrorKind::TypeError => {
+            CacheError::Operation(format!("{}: {} (Type error)", context, err))
+        }
+        ErrorKind::ExecAbortError => {
+            CacheError::Operation(format!("{}: {} (Exec abort error)", context, err))
+        }
+        ErrorKind::BusyLoadingError => {
+            CacheError::Connection(format!("{}: {} (Busy loading)", context, err))
+        }
+        ErrorKind::InvalidClientConfig => {
+            CacheError::Connection(format!("{}: {} (Invalid client config)", context, err))
+        }
+        ErrorKind::Moved => CacheError::Operation(format!("Redis moved error: {}", err)),
+        ErrorKind::Ask => CacheError::Operation(format!("Redis ask error: {}", err)),
+        ErrorKind::TryAgain => {
+            CacheError::Operation(format!("{}: {} (Try again)", context, err))
+        }
+        ErrorKind::ClusterDown => {
+            CacheError::Connection(format!("{}: {} (Cluster down)", context, err))
+        }
+        ErrorKind::CrossSlot => {
+            CacheError::Operation(format!("{}: {} (Cross slot)", context, err))
+        }
+        ErrorKind::MasterDown => {
+            CacheError::Connection(format!("{}: {} (Master down)", context, err))
+        }
+        ErrorKind::NotBusy => CacheError::Operation(format!("Redis not busy: {}", err)),
+        _ => CacheError::Operation(format!("{}: {}", context, err)),
+    }
+}
+
+#[cfg(feature = "redis_cache")]
+#[async_trait]
+impl CacheService for RedisCache {
+    async fn get(&self, key: &str) -> CacheResult<Option<Vec<u8>>> {
+        let prefixed_key = self.prefix_key(key);
+        let mut conn = self.connection.clone();
+
+        // Execute Redis GET command
+        match conn.get::<_, Option<Vec<u8>>>(&prefixed_key).await {
+            Ok(value) => {
+                if value.is_some() {
+                    self.hits.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    self.misses.fetch_add(1, Ordering::Relaxed);
+                }
+                Ok(value)
+            }
+            Err(e) => {
+                // Handle nil responses gracefully
+                if e.kind() == ErrorKind::TypeError || e.to_string().contains("nil") {
+                    self.misses.fetch_add(1, Ordering::Relaxed);
+                    Ok(None)
+                } else {
+                    Err(map_redis_error(
+                        e,
+                        &format!("Failed to get key {}", prefixed_key),
+                    ))
+                }
+            }
+        }
+    }
+
+    async fn set(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> CacheResult<()> {
+        let prefixed_key = self.prefix_key(key);
+        let mut conn = self.connection.clone();
+        let expiry = ttl.unwrap_or(self.default_ttl);
+
+        // For short-lived TTLs (under a second), use millisecond precision
+        if expiry.as_secs() == 0 && expiry.subsec_millis() > 0 {
+            let mut cmd = redis::cmd("SET");
+            cmd.arg(&prefixed_key)
+                .arg(value)
+                .arg("PX")
+                .arg(expiry.as_millis() as u64);
+
+            cmd.query_async(&mut conn)
+                .await
+                .map_err(|e| {
+                    map_redis_error(e, &format!("Failed to set key {} with PX", prefixed_key))
+                })?;
+        } else {
+            // For normal TTLs, use second precision
+            conn.set_ex(prefixed_key, value, expiry.as_secs() as usize)
+                .await
+                .map_err(|e| {
+                    map_redis_error(e, &format!("Failed to set key {} with EX", key))
+                })?;
+        }
+
+        Ok(())
+    }
+
+    async fn delete(&self, key: &str) -> CacheResult<bool> {
+        let key = self.prefix_key(key);
+        let result: RedisResult<i64> = self.connection.clone().del(&key).await;
+
+        match result {
+            Ok(count) => Ok(count > 0),
+            Err(e) => Err(Self::convert_error(e)),
+        }
+    }
+
+    async fn exists(&self, key: &str) -> CacheResult<bool> {
+        let key = self.prefix_key(key);
+        let result: RedisResult<i64> = self.connection.clone().exists(&key).await;
+
+        match result {
+            Ok(count) => Ok(count > 0),
+            Err(e) => Err(Self::convert_error(e)),
+        }
+    }
+
+    async fn set_nx(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> CacheResult<bool> {
+        let key = self.prefix_key(key);
+        let expiry = ttl.unwrap_or(self.default_ttl);
+
+        let result: RedisResult<bool> = if expiry.as_secs() > 0 {
+            let mut cmd = redis::cmd("SET");
+            cmd.arg(&key)
+                .arg(value)
+                .arg("NX")
+                .arg("EX")
+                .arg(expiry.as_secs());
+            let response: RedisValue = cmd.query_async(&mut self.connection.clone()).await?;
+
+            match response {
+                RedisValue::Nil => Ok(false),
+                RedisValue::Status(status) if status == "OK" => Ok(true),
+                _ => Ok(false),
+            }
+        } else {
+            self.connection.clone().set_nx(&key, value).await
+        };
+
+        result.map_err(Self::convert_error)
+    }
+
+    async fn get_set(&self, key: &str, value: &[u8]) -> CacheResult<Option<Vec<u8>>> {
+        let key = self.prefix_key(key);
+        let result: RedisResult<Option<Vec<u8>>> =
+            self.connection.clone().getset(&key, value).await;
+
+        match result {
+            Ok(value) => Ok(value),
+            Err(e) => {
+                // Handle nil response as None
+                if e.kind() == redis::ErrorKind::TypeError || e.to_string().contains("nil") {
+                    Ok(None)
+                } else {
+                    Err(Self::convert_error(e))
+                }
+            }
+        }
+    }
+
+    async fn increment(&self, key: &str, delta: i64) -> CacheResult<i64> {
+        let key = self.prefix_key(key);
+        let result: RedisResult<i64> = if delta >= 0 {
+            self.connection.clone().incr(&key, delta).await
+        } else {
+            self.connection.clone().decr(&key, -delta).await
+        };
+
+        result.map_err(Self::convert_error)
+    }
+
+    async fn set_many(
+        &self,
+        items: &HashMap<String, Vec<u8>>,
+        ttl: Option<Duration>,
+    ) -> CacheResult<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+
+        let mut pipe = redis::pipe();
+        let expiry = ttl.unwrap_or(self.default_ttl);
+
+        for (key, value) in items {
+            let key = self.prefix_key(key);
+            if expiry.as_secs() > 0 {
+                pipe.set_ex(&key, value, expiry.as_secs() as usize);
+            } else {
+                pipe.set(&key, value);
+            }
+        }
+
+        let result: RedisResult<()> = pipe.query_async(&mut self.connection.clone()).await;
+        result.map_err(Self::convert_error)
+    }
+
+    async fn get_many(&self, keys: &[String]) -> CacheResult<HashMap<String, Vec<u8>>> {
+        if keys.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let prefixed_keys: Vec<String> = keys.iter().map(|k| self.prefix_key(k)).collect();
+
+        let result: RedisResult<Vec<Option<Vec<u8>>>> = self
+            .connection
+            .clone()
+            .get(prefixed_keys.as_slice())
+            .await;
+
+        match result {
+            Ok(values) => {
+                let mut map = HashMap::new();
+                for (i, value) in values.into_iter().enumerate() {
+                    if let Some(data) = value {
+                        let original_key = if i < keys.len() { &keys[i] } else { continue };
+                        map.insert(original_key.clone(), data);
+                    }
+                }
+                Ok(map)
+            }
+            Err(e) => Err(Self::convert_error(e)),
+        }
+    }
+
+    async fn delete_many(&self, keys: &[String]) -> CacheResult<u64> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+
+        let prefixed_keys: Vec<String> = keys.iter().map(|k| self.prefix_key(k)).collect();
+
+        let result: RedisResult<i64> = self
+            .connection
+            .clone()
+            .del(prefixed_keys.as_slice())
+            .await;
+
+        match result {
+            Ok(count) => Ok(count as u64),
+            Err(e) => Err(Self::convert_error(e)),
+        }
+    }
+
+    async fn clear(&self, namespace: Option<&str>) -> CacheResult<()> {
+        // Use namespace from parameter, or object's namespace if not specified
+        let pattern = if let Some(ns) = namespace {
+            format!("{}:*", ns)
+        } else if let Some(ns) = &self.namespace {
+            format!("{}:*", ns)
+        } else {
+            "*".to_string()
+        };
+
+        // WARNING: This is a potentially expensive operation in production
+        // as it uses the KEYS command
+        let keys: RedisResult<Vec<String>> = redis::cmd("KEYS")
+            .arg(&pattern)
+            .query_async(&mut self.connection.clone())
+            .await;
+
+        match keys {
+            Ok(keys) => {
+                if !keys.is_empty() {
+                    let result: RedisResult<i64> =
+                        self.connection.clone().del(keys.as_slice()).await;
+                    result.map(|_| ()).map_err(Self::convert_error)
+                } else {
+                    Ok(())
+                }
+            }
+            Err(e) => Err(Self::convert_error(e)),
+        }
+    }
+
+    async fn lock(&self, key: &str, ttl: Duration) -> CacheResult<Option<String>> {
+        // Use Redis to implement distributed locking (based on the Redlock algorithm)
+        let lock_key = self.prefix_key(&format!("lock:{}", key));
+        let token = uuid::Uuid::new_v4().to_string();
+
+        // Try to acquire the lock with NX
+        let result: RedisResult<bool> = self
+            .connection
+            .clone()
+            .set_ex(&lock_key, token.as_bytes(), ttl.as_secs() as usize)
+            .await;
+
+        match result {
+            Ok(true) => Ok(Some(token)),
+            Ok(false) => Ok(None),
+            Err(e) => Err(Self::convert_error(e)),
+        }
+    }
+
+    async fn unlock(&self, key: &str, lock_token: &str) -> CacheResult<bool> {
+        // Use Lua script to ensure atomic release - only delete if the token matches
+        let lock_key = self.prefix_key(&format!("lock:{}", key));
+
+        let script = r#"
+        if redis.call('get', KEYS[1]) == ARGV[1] then
+            return redis.call('del', KEYS[1])
+        else
+            return 0
+        end
+        "#;
+
+        let result: RedisResult<i64> = redis::Script::new(script)
+            .key(&lock_key)
+            .arg(lock_token.as_bytes())
+            .invoke_async(&mut self.connection.clone())
+            .await;
+
+        match result {
+            Ok(1) => Ok(true),
+            Ok(_) => Ok(false),
+            Err(e) => Err(Self::convert_error(e)),
+        }
+    }
+
+    fn get_cache_type(&self) -> CacheType {
+        CacheType::Redis
+    }
+
+    async fn ping(&self) -> CacheResult<()> {
+        let result: RedisResult<String> = redis::cmd("PING")
+            .query_async(&mut self.connection.clone())
+            .await;
+
+        match result {
+            Ok(response) if response == "PONG" => Ok(()),
+            Ok(_) => Err(CacheError::Connection("Invalid PING response".to_string())),
+            Err(e) => Err(Self::convert_error(e)),
+        }
+    }
+
+    async fn close(&self) -> CacheResult<()> {
+        // ConnectionManager handles connection cleanup automatically
+        Ok(())
+    }
+
+    fn get_default_ttl(&self) -> Duration {
+        self.default_ttl
+    }
+
+    async fn stats(&self) -> CacheResult<CacheStats> {
+        let info_cmd: RedisResult<String> = redis::cmd("INFO")
+            .query_async(&mut self.connection.clone())
+            .await;
+
+        match info_cmd {
+            Ok(info) => {
+                let mut stats = CacheStats {
+                    item_count: None,
+                    memory_used_bytes: None,
+                    hits: None,
+                    misses: None,
+                    sets: None,
+                    deletes: None,
+                    additional_metrics: HashMap::new(),
+                    ..Default::default()
+                };
+
+                // Parse relevant lines from INFO command output
+                for line in info.lines() {
+                    // Skip comments and empty lines
+                    if line.starts_with('#') || line.trim().is_empty() {
+                        continue;
+                    }
+
+                    if let Some((key, value)) = line.split_once(':') {
+                        match key {
+                            "keyspace_hits" => {
+                                if let Ok(hits) = value.parse::<u64>() {
+                                    stats.hits = Some(hits);
+                                }
+                            }
+                            "keyspace_misses" => {
+                                if let Ok(misses) = value.parse::<u64>() {
+                                    stats.misses = Some(misses);
+                                }
+                            }
+                            "used_memory" => {
+                                if let Ok(memory) = value.parse::<u64>() {
+                                    stats.memory_used_bytes = Some(memory);
+                                }
+                            }
+                            "db0" => {
+                                // Parse db0 string which looks like: "keys=123,expires=12,avg_ttl=3600"
+                                if let Some(keys_part) = value.split(',').next() {
+                                    if let Some(keys_str) = keys_part.strip_prefix("keys=") {
+                                        if let Ok(keys) = keys_str.parse::<u64>() {
+                                            stats.item_count = Some(keys);
+                                        }
+                                    }
+                                }
+                            }
+                            // Add other interesting metrics to additional_metrics
+                            "connected_clients"
+                            | "total_connections_received"
+                            | "expired_keys"
+                            | "evicted_keys"
+                            | "uptime_in_seconds" => {
+                                stats
+                                    .additional_metrics
+                                    .insert(key.to_string(), value.to_string());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                Ok(stats)
+            }
+            Err(e) => Err(Self::convert_error(e)),
+        }
+    }
+
+    async fn flush(&self) -> CacheResult<()> {
+        let pattern = if let Some(ns) = &self.namespace {
+            format!("{}:*", ns)
+        } else {
+            "*".to_string()
+        };
+
+        // WARNING: This is a potentially expensive operation in production
+        // as it uses the KEYS command
+        let keys: RedisResult<Vec<String>> = redis::cmd("KEYS")
+            .arg(&pattern)
+            .query_async(&mut self.connection.clone())
+            .await;
+
+        match keys {
+            Ok(keys) => {
+                if !keys.is_empty() {
+                    let result: RedisResult<i64> =
+                        self.connection.clone().del(keys.as_slice()).await;
+                    result.map(|_| ()).map_err(Self::convert_error)
+                } else {
+                    Ok(())
+                }
+            }
+            Err(e) => Err(Self::convert_error(e)),
+        }
+    }
+}
+
+#[cfg(not(feature = "redis_cache"))]
+#[async_trait::async_trait]
+impl crate::cache::CacheService for RedisCache {
+    async fn get(&self, _key: &str) -> crate::cache::CacheResult<Option<Vec<u8>>> {
+        Err(crate::cache::CacheError::Operation("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+    }
+
+    async fn set(&self, _key: &str, _value: &[u8], _ttl: Option<std::time::Duration>) -> crate::cache::CacheResult<()> {
+        Err(crate::cache::CacheError::Operation("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+    }
+
+    async fn delete(&self, _key: &str) -> crate::cache::CacheResult<bool> {
+        Err(crate::cache::CacheError::Operation("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+    }
+
+    async fn exists(&self, _key: &str) -> crate::cache::CacheResult<bool> {
+        Err(crate::cache::CacheError::Operation("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+    }
+
+    async fn set_nx(&self, _key: &str, _value: &[u8], _ttl: Option<std::time::Duration>) -> crate::cache::CacheResult<bool> {
+        Err(crate::cache::CacheError::Operation("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+    }
+
+    async fn get_set(&self, _key: &str, _value: &[u8]) -> crate::cache::CacheResult<Option<Vec<u8>>> {
+        Err(crate::cache::CacheError::Operation("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+    }
+
+    async fn increment(&self, _key: &str, _delta: i64) -> crate::cache::CacheResult<i64> {
+        Err(crate::cache::CacheError::Operation("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+    }
+
+    async fn set_many(&self, _items: &std::collections::HashMap<String, Vec<u8>>, _ttl: Option<std::time::Duration>) -> crate::cache::CacheResult<()> {
+        Err(crate::cache::CacheError::Operation("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+    }
+
+    async fn get_many(&self, _keys: &[String]) -> crate::cache::CacheResult<std::collections::HashMap<String, Vec<u8>>> {
+        Err(crate::cache::CacheError::Operation("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+    }
+
+    async fn delete_many(&self, _keys: &[String]) -> crate::cache::CacheResult<u64> {
+        Err(crate::cache::CacheError::Operation("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+    }
+
+    async fn clear(&self, _namespace: Option<&str>) -> crate::cache::CacheResult<()> {
+        Err(crate::cache::CacheError::Operation("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+    }
+
+    async fn lock(&self, _key: &str, _ttl: std::time::Duration) -> crate::cache::CacheResult<Option<String>> {
+        Err(crate::cache::CacheError::Operation("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+    }
+
+    async fn unlock(&self, _key: &str, _lock_token: &str) -> crate::cache::CacheResult<bool> {
+        Err(crate::cache::CacheError::Operation("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+    }
+
+    fn get_cache_type(&self) -> crate::cache::CacheType {
+        crate::cache::CacheType::Redis
+    }
+
+    async fn ping(&self) -> crate::cache::CacheResult<()> {
+        Err(crate::cache::CacheError::Operation("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+    }
+
+    async fn close(&self) -> crate::cache::CacheResult<()> {
+        Ok(())
+    }
+
+    fn get_default_ttl(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(300)
+    }
+
+    async fn stats(&self) -> crate::cache::CacheResult<crate::cache::CacheStats> {
+        Err(crate::cache::CacheError::Operation("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+    }
+
+    async fn flush(&self) -> crate::cache::CacheResult<()> {
+        Err(crate::cache::CacheError::Operation("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+    }
+}
+
+#[cfg(not(feature = "redis_cache"))]
+impl RedisCache {
+    pub async fn connect(_config: &crate::cache::CacheConfig) -> crate::cache::CacheResult<Self> {
+        Err(crate::cache::CacheError::Connection("Redis support is not enabled. Recompile with the 'redis_cache' feature.".to_string()))
+    }
+}

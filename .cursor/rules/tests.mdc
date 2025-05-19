@@ -1,0 +1,64 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+**Task List for SDK Testing:**
+
+1.  **JWT Authentication (`src/jwt_auth/`, `src/jwt_auth_compat.rs`):**
+    *   Verify core token validation logic (already significantly covered).
+    *   Test integration with Axum (middleware application, claim extraction).
+    *   Ensure backward compatibility alias (`JwtAuthLayer`) functions correctly (already covered).
+    *   Test interaction with `secret_client` for redaction (implicitly tested, could be more explicit).
+
+2.  **Configuration & Builder (`src/builder.rs`, potentially related parts of `src/bootstrap.rs`):**
+    *   Test `ModuleBuilder` methods for setting configuration options.
+    *   Verify default configuration values.
+    *   Test different ways configuration might be sourced (e.g., env vars, future file support).
+    *   Test required vs. optional configuration parameters.
+    *   Test the final `AppState` construction based on builder inputs.
+
+3.  **Secret Management (`src/secret_client/`, `src/secret_provider/`, `src/secrets.rs`, `src/typed_secret.rs`):**
+    *   **Providers (`src/secret_provider/`):**
+        *   Review existing tests for `EnvProvider` and `MemoryProvider` for completeness (e.g., edge cases, error conditions).
+        *   Test watching/notification mechanisms thoroughly.
+    *   **Client (`src/secret_client/`):**
+        *   Test secret retrieval logic (`get_secret`, `get_secrets`).
+        *   Test secret rotation subscription and handling (`subscribe_secret_rotations`).
+        *   Test typed secret retrieval and parsing (`get_typed_secret`, `Secret` trait usage).
+        *   Test secret redaction registration and functionality.
+
+4.  **IPC & State (`src/ipc.rs`, `src/ipc_types/`, `src/state.rs`):**
+    *   Test serialization/deserialization of all `ModuleToOrchestrator` and `OrchestratorToModule` message types.
+    *   Test the core `process_ipc_messages` loop logic (might require mocking stdin/stdout or the IPC channel).
+    *   Test state management within `AppState`.
+
+5.  **Bootstrap & Handshake (`src/bootstrap.rs`, `src/handshake.rs`):**
+    *   Test the `read_init` function for correctly parsing `OrchestratorInit`.
+    *   Test error handling during handshake (e.g., invalid JSON, missing data).
+    *   Test the overall `bootstrap_module` flow (might require mocking IPC).
+
+6.  **Module Server (`src/server.rs`):**
+    *   Test the `serve_module` function.
+    *   Test integration with Axum for serving the module's API endpoints (requires defining test endpoints).
+    *   Test error handling during server setup and runtime.
+
+7.  **Announce & Discovery (`src/announce.rs`, `src/router_discovery.rs`):**
+    *   Test the creation of `ModuleAnnounce` messages.
+    *   Test the `send_announce` function (mocking IPC).
+    *   Test endpoint discovery from Axum routers (`announce_from_router`) if the `discover_endpoints` feature is used.
+
+8.  **Logging (`src/logging.rs`):**
+    *   Test `init_module` function behavior (e.g., log level setting).
+    *   Verify log formatting (might be tricky, potentially checking stdout/stderr during other tests).
+
+9.  **Utilities (`src/utils.rs`):**
+    *   Test JSON printing functions (`print_json`, `eprint_json`, etc.).
+
+10. **Macros (`src/pywatt_macros/`):**
+    *   Test procedural macros if they contain significant logic (often tested via compile-time checks or integration tests using them).
+
+11. **Feature Flags (`src/lib.rs`, `Cargo.toml`):**
+    *   Ensure tests cover functionality gated by different feature flags (like we did with `jwt_auth`).
+    *   Consider tests that explicitly *don't* enable a feature to ensure things compile/run correctly without it.
+
