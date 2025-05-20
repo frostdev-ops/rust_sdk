@@ -20,11 +20,8 @@ use pywatt_sdk::model_manager::{
     ModelManager, config::ModelManagerConfig, generator::ModelGenerator,
 };
 #[cfg(feature = "database")]
-use serde_json;
 #[cfg(feature = "database")]
-use serde_yaml;
 #[cfg(feature = "database")]
-use toml;
 
 /// Entry point for the database-tool CLI
 #[derive(Parser)]
@@ -185,7 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if !sql.trim_end().ends_with(';') {
                         script.push_str(";\n");
                     }
-                    script.push_str("\n");
+                    script.push('\n');
                 }
 
                 // Write output
@@ -250,9 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 code.push_str("use serde_json::Value;\n\n");
                 for model in &models.tables {
                     let struct_name = to_pascal_case(&model.name);
-                    code.push_str(&format!(
-                        "#[derive(Debug, Clone, Serialize, Deserialize)]\n"
-                    ));
+                    code.push_str("#[derive(Debug, Clone, Serialize, Deserialize)]\n");
                     code.push_str(&format!("pub struct {} {{\n", struct_name));
                     for col in &model.columns {
                         let rust_ty = match &col.data_type {

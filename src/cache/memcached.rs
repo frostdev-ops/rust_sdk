@@ -568,7 +568,6 @@ impl CacheService for MemcachedCache {
                         sets: None,    // Memcached stats might not directly provide 'sets'
                         deletes: None, // Memcached stats might not directly provide 'deletes'
                         additional_metrics: HashMap::new(),
-                        ..Default::default()
                     };
 
                     for (server, server_stats) in stats_map {

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::de::Error as DeError;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -100,7 +101,7 @@ impl DatabaseRow for ProxyDatabaseRow {
         match self.data.get(column) {
             Some(value) => {
                 if let Some(s) = value.as_str() {
-                    match base64::decode(s) {
+                    match STANDARD.decode(s) {
                         Ok(bytes) => Ok(bytes),
                         Err(e) => Err(DatabaseError::Query(format!(
                             "Column '{}' has invalid base64: {}",
@@ -221,7 +222,7 @@ impl DatabaseRow for ProxyDatabaseRow {
                 if value.is_null() {
                     Ok(None)
                 } else if let Some(s) = value.as_str() {
-                    match base64::decode(s) {
+                    match STANDARD.decode(s) {
                         Ok(bytes) => Ok(Some(bytes)),
                         Err(e) => Err(DatabaseError::Query(format!(
                             "Column '{}' has invalid base64: {}",
@@ -675,7 +676,7 @@ pub fn serialize_params(params: &[DatabaseValue]) -> Result<serde_json::Value, s
                         serde_json::Error::custom(format!("Invalid float value: {}", f))
                     }),
                 DatabaseValue::Text(s) => Ok(serde_json::Value::String(s.clone())),
-                DatabaseValue::Blob(b) => Ok(serde_json::Value::String(base64::encode(b))),
+                DatabaseValue::Blob(b) => Ok(serde_json::Value::String(STANDARD.encode(b))),
                 DatabaseValue::Array(arr) => {
                     let values_vec_result: Result<Vec<serde_json::Value>, serde_json::Error> = arr
                         .iter()
@@ -699,7 +700,7 @@ pub fn serialize_params(params: &[DatabaseValue]) -> Result<serde_json::Value, s
                                 Ok(serde_json::Value::String(s_inner.clone()))
                             }
                             DatabaseValue::Blob(b_inner) => {
-                                Ok(serde_json::Value::String(base64::encode(b_inner)))
+                                Ok(serde_json::Value::String(STANDARD.encode(b_inner)))
                             }
                             DatabaseValue::Array(_) => Err(serde_json::Error::custom(
                                 "Nested arrays not supported for direct IPC serialization",

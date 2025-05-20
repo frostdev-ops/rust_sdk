@@ -6,8 +6,6 @@ mod tests {
     use secrecy::SecretString;
 
     use crate::AnnouncedEndpoint;
-    #[cfg(feature = "integration_tests")]
-    use crate::ipc_types::SecretValueResponse;
     use std::collections::HashMap;
     use std::io::Cursor;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -171,7 +169,7 @@ mod tests {
             )),
         };
 
-        let secrets = vec![secrecy::SecretString::new("test_secret".to_string().into())];
+        let secrets = vec![secrecy::SecretString::new("test_secret".to_string())];
 
         let state = state_builder(&init, secrets);
         assert_eq!(state.get("module_id").unwrap(), "test-module");
@@ -194,7 +192,7 @@ mod tests {
     #[allow(dead_code)]
     fn create_mock_secrets() -> Vec<SecretString> {
         vec![secrecy::SecretString::new(
-            "test_secret_value".to_string().into(),
+            "test_secret_value".to_string(),
         )]
     }
 

@@ -42,9 +42,10 @@ impl Default for CachePolicy {
 }
 
 /// Cache type enum for different cache service implementations
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CacheType {
     /// In-memory cache (preferred variant)
+    #[default]
     InMemory,
     /// Redis cache
     Redis,
@@ -52,13 +53,6 @@ pub enum CacheType {
     Memcached,
     /// File-based cache
     File,
-}
-
-// Add manual `Default` impl to avoid deprecation warnings from default variant selection
-impl Default for CacheType {
-    fn default() -> Self {
-        CacheType::InMemory
-    }
 }
 
 /// Cache configuration – aligned with test expectations.

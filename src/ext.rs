@@ -129,10 +129,10 @@ where
 
     #[cfg(feature = "cors")]
     fn with_cors_preflight(self) -> Self {
-        use axum::extract::Request;
         use axum::http::{HeaderValue, header};
         use axum::response::IntoResponse;
         use std::convert::Infallible;
+        use http::Request;
 
         // CORS preflight handler
         async fn handle_cors_preflight(
@@ -160,13 +160,14 @@ where
                 .header(header::ACCESS_CONTROL_ALLOW_METHODS, requested_method)
                 .header(header::ACCESS_CONTROL_ALLOW_HEADERS, requested_headers)
                 .header(header::ACCESS_CONTROL_MAX_AGE, "86400")
-                .body(axum::body::Body::empty())
+                .body(axum::body::Empty::new())
                 .unwrap()
+                .into_response()
         }
 
         // Add CORS headers middleware
         let cors_layer = tower::ServiceBuilder::new().layer(axum::middleware::from_fn(
-            move |req: Request, next: axum::middleware::Next| async move {
+            move |req: Request<axum::body::Body>, next: axum::middleware::Next<axum::body::Body>| async move {
                 let response = next.run(req).await;
 
                 // Add CORS headers to all responses

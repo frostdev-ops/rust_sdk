@@ -8,8 +8,10 @@ use serde::de::DeserializeOwned;
 use std::{
     convert::Infallible,
     marker::PhantomData,
+    sync::Arc,
     task::{Context, Poll},
 };
+use tokio::sync::Mutex;
 use tower::{Layer, Service};
 
 use crate::jwt_auth::is_running_as_module;
@@ -107,6 +109,7 @@ pub struct JwtAuthService<S, T = serde_json::Value> {
 impl<S, B, T> Service<Request<B>> for JwtAuthService<S, T>
 where
     S: Service<Request<B>, Response = Response, Error = Infallible> + Clone + Send + 'static,
+    S: 'static,
     S::Future: Send + 'static,
     B: Send + 'static,
     T: DeserializeOwned + Send + Sync + Clone + 'static,
@@ -171,7 +174,8 @@ where
                                         axum::Json(serde_json::json!({
                                             "error": format!("Failed to connect to JWT service: {}", e)
                                         })),
-                                    ).into_response());
+                                    )
+                                        .into_response());
                                 }
                             }
                         }
@@ -180,18 +184,19 @@ where
                         let proxy = proxy_service_lock.as_ref().unwrap();
                         match validate_token_proxy::<T>(proxy, &token).await {
                             Ok(claims) => {
-                                // Insert decoded claims into request extensions
                                 req.extensions_mut().insert(claims);
                                 drop(proxy_service_lock); // Release the lock before awaiting
-                                Ok(svc.call(req).await?)
+                                svc.call(req).await // This already returns Result<Response, Infallible>
                             }
-                            Err(err) => Ok((
-                                StatusCode::UNAUTHORIZED,
-                                axum::Json(serde_json::json!({
-                                    "error": format!("Unauthorized: {}", err)
-                                })),
-                            )
-                                .into_response()),
+                            Err(err) => {
+                                Ok((
+                                    StatusCode::UNAUTHORIZED,
+                                    axum::Json(serde_json::json!({
+                                        "error": format!("Unauthorized: {}", err)
+                                    })),
+                                )
+                                    .into_response())
+                            }
                         }
                     })
                 }
@@ -214,20 +219,18 @@ where
                 let decoding_key = DecodingKey::from_secret(key.as_bytes());
                 match decode::<T>(&token, &decoding_key, &validation) {
                     Ok(data) => {
-                        // Insert decoded claims into request extensions
                         req.extensions_mut().insert(data.claims);
-
-                        Box::pin(async move { Ok(svc.call(req).await?) })
+                        Box::pin(async move { svc.call(req).await }) // svc.call already returns Result<Response, Infallible>
                     }
-                    Err(err) => Box::pin(future::ok(
-                        (
+                    Err(err) => {
+                        Box::pin(future::ok((
                             StatusCode::UNAUTHORIZED,
                             axum::Json(serde_json::json!({
                                 "error": format!("Unauthorized: {}", err)
                             })),
                         )
-                            .into_response(),
-                    )),
+                            .into_response()))
+                    }
                 }
             }
         } else {

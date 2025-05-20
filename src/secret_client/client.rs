@@ -120,7 +120,7 @@ impl SecretClient {
                     )));
                 }
                 // Wrap the returned String into a SecretString
-                let secret_value = SecretString::new(secret_resp.value.clone().into());
+                let secret_value = SecretString::new(secret_resp.value.clone());
                 // Update cache and rotation tracking
                 if let Some(rotation_id) = &secret_resp.rotation_id {
                     self.rotation_tracking
@@ -235,7 +235,7 @@ impl SecretClient {
             }
             ServerResponse::Secret(secret_resp) => {
                 // Wrap the returned String into a SecretString and store in cache
-                let secret_value = SecretString::new(secret_resp.value.clone().into());
+                let secret_value = SecretString::new(secret_resp.value.clone());
                 self.cache
                     .insert(secret_resp.name.clone(), secret_value.clone());
 
@@ -352,7 +352,7 @@ impl SecretClient {
     /// Testing helper to insert a secret directly into the cache.
     pub async fn insert_test_secret(&self, key: &str, value: &str) {
         self.cache
-            .insert(key.to_string(), SecretString::new(value.to_string().into()));
+            .insert(key.to_string(), SecretString::new(value.to_string()));
     }
 
     #[cfg(test)]

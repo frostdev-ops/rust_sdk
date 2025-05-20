@@ -63,12 +63,12 @@ impl RedisCache {
         }
 
         // Create client
-        let client = Client::open(redis_url.clone()).map_err(|e| Self::convert_error(e))?;
+        let client = Client::open(redis_url.clone()).map_err(Self::convert_error)?;
 
         // Create connection manager
         let connection = ConnectionManager::new(client)
             .await
-            .map_err(|e| Self::convert_error(e))?;
+            .map_err(Self::convert_error)?;
 
         Ok(Self {
             connection: Arc::new(connection),
@@ -326,7 +326,7 @@ impl CacheService for RedisCache {
     async fn clear(&self, namespace: Option<&str>) -> CacheResult<()> {
         let mut conn_mgr = self.connection.as_ref().clone();
 
-        let target_namespace = namespace.or_else(|| self.namespace.as_deref());
+        let target_namespace = namespace.or(self.namespace.as_deref());
 
         let pattern = if let Some(ns) = target_namespace {
             format!("{}:*", ns)

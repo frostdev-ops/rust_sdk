@@ -8,6 +8,8 @@
 #[cfg(test)]
 mod tests {
     use axum::Router;
+    #[cfg(feature = "cors")]
+    use crate::ext::RouterExt;
     #[cfg(feature = "jwt_auth")]
     use axum::routing::get;
 

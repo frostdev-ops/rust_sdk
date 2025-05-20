@@ -1,7 +1,8 @@
 #[cfg(test)]
 #[cfg(all(feature = "ipc", feature = "database", feature = "cache", feature = "jwt_auth"))]
-mod ipc_proxy_tests {
+    use base64::{engine::general_purpose::STANDARD, Engine};
     use serde::{Deserialize, Serialize};
+    use std::f64::consts::PI;
 
     use crate::cache::{CacheConfig, CacheType};
     use crate::database::{DatabaseConfig, DatabaseType, DatabaseValue};
@@ -117,7 +118,7 @@ mod ipc_proxy_tests {
             DatabaseValue::Null,
             DatabaseValue::Boolean(true),
             DatabaseValue::Integer(42),
-            DatabaseValue::Float(3.14),
+            DatabaseValue::Float(PI),
             DatabaseValue::Text("hello".to_string()),
             DatabaseValue::Blob(vec![1, 2, 3, 4]),
             DatabaseValue::Array(vec![DatabaseValue::Integer(1), DatabaseValue::Integer(2)]),
@@ -130,10 +131,10 @@ mod ipc_proxy_tests {
         assert!(array[0].is_null());
         assert_eq!(array[1], true);
         assert_eq!(array[2], 42);
-        assert_eq!(array[3], 3.14);
+        assert_eq!(array[3], PI);
         assert_eq!(array[4], "hello");
         // The blob gets base64-encoded
-        assert_eq!(array[5], base64::encode(vec![1, 2, 3, 4]));
+        assert_eq!(array[5], STANDARD.encode(vec![1, 2, 3, 4]));
         // The array becomes a JSON array
         assert!(array[6].is_array());
         let inner_array = array[6].as_array().unwrap();
@@ -141,4 +142,3 @@ mod ipc_proxy_tests {
         assert_eq!(inner_array[0], 1);
         assert_eq!(inner_array[1], 2);
     }
-}

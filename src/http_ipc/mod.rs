@@ -164,16 +164,16 @@ impl<S: Send + Sync + Clone + 'static> HttpIpcRouter<S> {
 
                 // Call the handler
                 let handler_result = (route.handler)(request.clone(), state.clone()).await;
-                return match handler_result {
+                match handler_result {
                     Ok(mut response) => {
                         response.request_id = request.request_id;
-                        response
+                        return response;
                     }
                     Err(err) => {
                         error!("Handler error for {} {}: {}", method, path, err);
-                        result::error_to_response(err, &request.request_id)
+                        return result::error_to_response(err, &request.request_id);
                     }
-                };
+                }
             }
         }
 
@@ -182,11 +182,11 @@ impl<S: Send + Sync + Clone + 'static> HttpIpcRouter<S> {
             match handler(request.clone(), state).await {
                 Ok(mut response) => {
                     response.request_id = request.request_id;
-                    return response;
+                    response
                 }
                 Err(err) => {
                     error!("Handler error: {}", err);
-                    return result::error_to_response(err, &request.request_id);
+                    result::error_to_response(err, &request.request_id)
                 }
             }
         } else {

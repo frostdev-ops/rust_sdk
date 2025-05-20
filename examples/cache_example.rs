@@ -12,7 +12,7 @@ use std::time::Duration;
 
 #[cfg(feature = "cache")]
 use pywatt_sdk::cache::{
-    CacheConfig, CachePolicy, CacheService, CacheType, create_cache_service,
+    CacheConfig, CachePolicy, CacheType, create_cache_service,
     patterns::{DistributedLock, cache_aside, write_through},
 };
 

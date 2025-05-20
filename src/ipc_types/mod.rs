@@ -163,6 +163,28 @@ pub struct IpcHttpResponse {
     pub body: Option<Vec<u8>>,
 }
 
+/// Port negotiation request from module to orchestrator
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct IpcPortNegotiation {
+    /// Unique ID for this port request
+    pub request_id: String,
+    /// Optional specific port that the module wants to use
+    pub specific_port: Option<u16>,
+}
+
+/// Port negotiation response from orchestrator to module
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct IpcPortNegotiationResponse {
+    /// The request_id from the original request
+    pub request_id: String,
+    /// Whether the port allocation was successful
+    pub success: bool,
+    /// The allocated port number
+    pub port: u16,
+    /// Error message if port allocation failed
+    pub error_message: Option<String>,
+}
+
 /// Messages sent **from** a module **to** the orchestrator. These map 1-to-1 with what the legacy
 /// `secret_client` library called `ClientRequest` but we keep that alias as well.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -180,6 +202,8 @@ pub enum ModuleToOrchestrator {
     ServiceOperation(ServiceOperation),
     #[serde(rename = "http_response")]
     HttpResponse(IpcHttpResponse),
+    #[serde(rename = "port_request")]
+    PortRequest(IpcPortNegotiation),
     /// Message from a module intended for another module, to be routed by the orchestrator.
     #[serde(rename = "route_to_module")]
     RouteToModule {
@@ -217,6 +241,9 @@ pub enum OrchestratorToModule {
     ServiceOperationResult(ServiceOperationResult),
     #[serde(rename = "http_request")]
     HttpRequest(IpcHttpRequest),
+    /// Response to a port negotiation request
+    #[serde(rename = "port_response")]
+    PortResponse(IpcPortNegotiationResponse),
     /// A message routed from another module via the orchestrator.
     #[serde(rename = "routed_module_message")]
     RoutedModuleMessage {

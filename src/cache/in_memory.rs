@@ -547,7 +547,6 @@ impl CacheService for InMemoryCache {
             sets: None,
             deletes: None,
             additional_metrics: HashMap::new(),
-            ..Default::default()
         })
     }
 

@@ -358,9 +358,7 @@ impl TcpChannel {
     /// Send a message with reconnection if needed.
     pub async fn send_with_reconnect(&self, message: EncodedMessage) -> NetworkResult<()> {
         // Try to ensure we're connected first
-        if let Err(e) = self.ensure_connected().await {
-            return Err(e);
-        }
+        self.ensure_connected().await?;
         
         // Try to send the message
         match self.send_message(&message).await {
@@ -373,9 +371,7 @@ impl TcpChannel {
                     NetworkError::IoError(_)
                 ) {
                     // Try to reconnect
-                    if let Err(reconnect_err) = self.connect_with_retry().await {
-                        return Err(reconnect_err);
-                    }
+                    self.connect_with_retry().await?;
                     
                     // Try sending again after reconnection
                     self.send_message(&message).await
@@ -390,9 +386,7 @@ impl TcpChannel {
     /// Receive a message with reconnection if needed.
     pub async fn receive_with_reconnect(&self) -> NetworkResult<EncodedMessage> {
         // Try to ensure we're connected first
-        if let Err(e) = self.ensure_connected().await {
-            return Err(e);
-        }
+        self.ensure_connected().await?;
         
         // Try to receive a message
         match self.receive_message().await {
@@ -405,9 +399,7 @@ impl TcpChannel {
                     NetworkError::IoError(_)
                 ) {
                     // Try to reconnect
-                    if let Err(reconnect_err) = self.connect_with_retry().await {
-                        return Err(reconnect_err);
-                    }
+                    self.connect_with_retry().await?;
                     
                     // Try receiving again after reconnection
                     self.receive_message().await

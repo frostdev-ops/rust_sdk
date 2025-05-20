@@ -212,16 +212,16 @@ impl<S: Send + Sync + Clone + 'static> HttpTcpRouter<S> {
         if let Some(handler) = not_found_handler.as_ref() {
             match handler(request.clone(), state).await {
                 Ok(response) => {
-                    return response;
+                    response
                 }
                 Err(e) => {
                     error!("Not found handler error: {}", e);
-                    return error_to_response(e, &request.request_id);
+                    error_to_response(e, &request.request_id)
                 }
             }
         } else {
             // Default not found response
-            return not_found(&request.request_id, path);
+            not_found(&request.request_id, path)
         }
     }
     
@@ -233,7 +233,7 @@ impl<S: Send + Sync + Clone + 'static> HttpTcpRouter<S> {
         let mut path_methods: HashMap<String, Vec<String>> = HashMap::new();
         
         for route in routes.iter() {
-            let entry = path_methods.entry(route.path.clone()).or_insert_with(Vec::new);
+            let entry = path_methods.entry(route.path.clone()).or_default();
             entry.push(route.method.clone());
         }
         

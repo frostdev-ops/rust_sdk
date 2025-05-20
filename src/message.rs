@@ -337,9 +337,10 @@ impl<'de> Deserialize<'de> for EncodedMessage {
 }
 
 /// The encoding format for a message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum EncodingFormat {
     /// JSON encoding.
+    #[default]
     Json,
     /// Binary encoding.
     Binary,
@@ -347,13 +348,6 @@ pub enum EncodingFormat {
     Base64,
     /// Automatic selection based on content.
     Auto,
-}
-
-impl Default for EncodingFormat {
-    fn default() -> Self {
-        // Default to JSON as it's the most compatible format
-        EncodingFormat::Json
-    }
 }
 
 impl fmt::Display for EncodingFormat {
@@ -452,7 +446,7 @@ impl EncodedMessage {
                     Err(_) => {
                         // Then try to decode directly to T
                         let (value, _) = bincode::decode_from_slice(&self.data, config)
-                            .map_err(|e| MessageError::BinaryDecodingError(e))?;
+                            .map_err(MessageError::BinaryDecodingError)?;
                         Ok(value)
                     }
                 }
@@ -470,7 +464,7 @@ impl EncodedMessage {
                     Err(_e) => {
                         // Then try to decode directly to T
                         let (value, _) = bincode::decode_from_slice(&binary, config)
-                            .map_err(|e| MessageError::BinaryDecodingError(e))?;
+                            .map_err(MessageError::BinaryDecodingError)?;
                         Ok(value)
                     }
                 }
@@ -495,7 +489,7 @@ impl EncodedMessage {
             EncodingFormat::Binary => {
                 let config = bincode::config::standard();
                 let (message, _) =
-                    bincode::decode_from_slice(&self.data, config).map_err(|e| MessageError::BinaryDecodingError(e))?;
+                    bincode::decode_from_slice(&self.data, config).map_err(MessageError::BinaryDecodingError)?;
                 Ok(message)
             }
             EncodingFormat::Base64 => {
@@ -507,7 +501,7 @@ impl EncodedMessage {
                 // Then decode from binary
                 let config = bincode::config::standard();
                 let (message, _) =
-                    bincode::decode_from_slice(&binary, config).map_err(|e| MessageError::BinaryDecodingError(e))?;
+                    bincode::decode_from_slice(&binary, config).map_err(MessageError::BinaryDecodingError)?;
                 Ok(message)
             }
             EncodingFormat::Auto => {

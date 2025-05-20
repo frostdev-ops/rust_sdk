@@ -8,19 +8,11 @@ use crate::ipc_types::{
 use crate::jwt_auth::error::JwtAuthError;
 
 /// JWT configuration for using a remote JWT validation service
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct JwtProxyConfig {
     /// Custom config parameters for the JWT service
     #[serde(default)]
     pub config: HashMap<String, String>,
-}
-
-impl Default for JwtProxyConfig {
-    fn default() -> Self {
-        Self {
-            config: HashMap::new(),
-        }
-    }
 }
 
 /// JWT proxy service for validating tokens via IPC

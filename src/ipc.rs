@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use crate::ipc_types::{
     IpcHttpRequest, IpcHttpResponse, ModuleToOrchestrator, OrchestratorToModule, ServiceOperation,
-    ServiceRequest,
+    ServiceRequest, IpcPortNegotiation, IpcPortNegotiationResponse,
 };
 use crate::logging::safe_log;
 use crate::secret_client::SecretClient;
@@ -39,6 +39,15 @@ lazy_static::lazy_static! {
     static ref HTTP_CHANNEL: StdMutex<Option<(BroadcastSender<IpcHttpRequest>, BroadcastReceiver<IpcHttpRequest>)>> = {
         StdMutex::new(None)
     };
+    
+    // Global port response sender - using std::sync::Mutex for synchronous access
+    // We'll use a sender slot to route responses back through the IPC channel
+    static ref PORT_RESPONSE_SENDER: StdMutex<Option<oneshot::Sender<IpcPortNegotiationResponse>>> = {
+        StdMutex::new(None)
+    };
+    
+    // Global variable to store the allocated port
+    static ref ALLOCATED_PORT: StdMutex<Option<u16>> = StdMutex::new(None);
 }
 
 static ONCE: std::sync::Once = std::sync::Once::new();
@@ -68,6 +77,116 @@ impl IpcManager {
     pub async fn process_ipc_messages(&self) {
         process_ipc_messages().await;
     }
+    
+    /// Send a port negotiation request to the orchestrator
+    pub async fn send_port_negotiation(&self, request: IpcPortNegotiation) -> StdResult<(), String> {
+        // Create oneshot channel for receiving the response
+        let (tx, rx) = oneshot::channel();
+        
+        // Store the sender in the response channel for the IPC loop to use
+        let mut port_sender = PORT_RESPONSE_SENDER.lock().unwrap();
+        *port_sender = Some(tx);
+        
+        // Send the request
+        let message = ModuleToOrchestrator::PortRequest(request);
+        let json = serde_json::to_string(&message).map_err(|e| e.to_string())?;
+        
+        // Send the message to the orchestrator
+        let mut stdout_guard = STDOUT_WRITER.lock().await;
+        
+        if let Err(e) = stdout_guard.write_all(json.as_bytes()).await {
+            return Err(format!("Failed to write port request to stdout: {}", e));
+        }
+        
+        if let Err(e) = stdout_guard.write_all(b"\n").await {
+            return Err(format!("Failed to write newline after port request: {}", e));
+        }
+        
+        if let Err(e) = stdout_guard.flush().await {
+            return Err(format!("Failed to flush stdout after port request: {}", e));
+        }
+        
+        Ok(())
+    }
+    
+    /// Wait for a port negotiation response from the orchestrator
+    pub async fn wait_for_port_response(&self) -> StdResult<IpcPortNegotiationResponse, String> {
+        // Since we're now storing the sender in PORT_RESPONSE_SENDER and using it in the IPC loop,
+        // we need to wait for it to be used, which indicates a response was received
+        
+        // Wait a bit for the response to come through the IPC channel
+        // This is not ideal but works for the port negotiation use case
+        // A timeout mechanism could be added here if needed
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        
+        // Retry mechanism to wait for a port response
+        for _ in 0..10 {
+            // Check if we have a response from the IPC loop
+            if let Ok(guard) = PORT_RESPONSE_SENDER.try_lock() {
+                if guard.is_none() {
+                    // The sender has been used and cleared - this means we should have a response
+                    // Check if we have a port stored in ALLOCATED_PORT
+                    if let Ok(port_guard) = ALLOCATED_PORT.try_lock() {
+                        if let Some(port) = *port_guard {
+                            // We have an allocated port, so return success
+                            return Ok(IpcPortNegotiationResponse {
+                                request_id: "auto-assigned".to_string(),
+                                success: true,
+                                port,
+                                error_message: None,
+                            });
+                        }
+                    }
+                    
+                    // If we don't have a port yet, something went wrong
+                    return Err("Port response received but no port was allocated".to_string());
+                }
+            }
+            
+            // Wait a bit and try again
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        }
+        
+        Err("Timed out waiting for port negotiation response".to_string())
+    }
+    
+    // We use the global ALLOCATED_PORT variable defined at module level
+    
+    /// Request a port from the orchestrator, combining send_port_negotiation and wait_for_port_response
+    /// 
+    /// # Arguments
+    /// * `request` - The port negotiation request
+    /// 
+    /// # Returns
+    /// The port negotiation response if successful, or an error message
+    pub async fn request_port(&self, request: IpcPortNegotiation) -> StdResult<IpcPortNegotiationResponse, String> {
+        // If we already have an allocated port, return it immediately
+        {
+            let port_guard = ALLOCATED_PORT.lock().unwrap();
+            if let Some(port) = *port_guard {
+                return Ok(IpcPortNegotiationResponse {
+                    request_id: request.request_id.clone(),
+                    success: true,
+                    port,
+                    error_message: None,
+                });
+            }
+        }
+        
+        // Send the request
+        self.send_port_negotiation(request.clone()).await?;
+        
+        // Wait for the response
+        let response = self.wait_for_port_response().await?;
+        
+        // Store the allocated port for future use
+        if response.success {
+            let mut port_guard = ALLOCATED_PORT.lock().unwrap();
+            *port_guard = Some(response.port);
+        }
+        
+        Ok(response)
+    }
 
     /// Send a request to the orchestrator and wait for the response
     pub async fn send_request<T>(&self, request: &T) -> StdResult<String, String>
@@ -75,6 +194,12 @@ impl IpcManager {
         T: serde::Serialize + std::fmt::Debug + Clone,
     {
         send_request(request).await
+    }
+}
+
+impl Default for IpcManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -226,16 +351,50 @@ pub async fn process_ipc_messages() {
                                     "SDK IPC: Broadcasting HttpRequest (request_id={})",
                                     req.request_id
                                 );
+                                
                                 if let Err(e) = tx.send(req) {
                                     safe_log!(
                                         error,
                                         "SDK IPC: Failed to broadcast HttpRequest: {}",
                                         e
                                     );
+                                }
+                            }
+                            OrchestratorToModule::PortResponse(resp) => {
+                                safe_log!(
+                                    info,
+                                    "SDK IPC: Received port negotiation response: request_id={}, success={}, port={}",
+                                    resp.request_id,
+                                    resp.success,
+                                    resp.port
+                                );
+                                
+                                // Store the port in our ALLOCATED_PORT static variable
+                                let port = resp.port;
+                                
+                                if resp.success {
+                                    let mut port_guard = ALLOCATED_PORT.lock().unwrap();
+                                    *port_guard = Some(port);
+                                    safe_log!(info, "SDK IPC: Stored allocated port: {}", port);
+                                }
+                                
+                                // Send the response through the oneshot channel if available
+                                let port_sender = {
+                                    let mut guard = PORT_RESPONSE_SENDER.lock().unwrap();
+                                    guard.take()
+                                };
+                                
+                                if let Some(sender) = port_sender {
+                                    if let Err(_) = sender.send(resp.clone()) {
+                                        safe_log!(
+                                            error,
+                                            "SDK IPC: Failed to forward port negotiation response - receiver dropped"
+                                        );
+                                    }
                                 } else {
                                     safe_log!(
-                                        debug,
-                                        "SDK IPC: HttpRequest broadcasted successfully."
+                                        warn,
+                                        "SDK IPC: Received port negotiation response but no waiting sender"
                                     );
                                 }
                             }

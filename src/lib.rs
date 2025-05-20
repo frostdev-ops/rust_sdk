@@ -24,6 +24,7 @@ pub mod registration;
 mod router_discovery;
 mod secrets;
 mod server;
+// Export all server module components from a single place
 pub mod state;
 #[cfg(test)]
 mod state_tests;
@@ -140,7 +141,7 @@ pub use internal_messaging::{InternalMessagingClient, InternalMessagingError, In
 pub use logging::init_module;
 pub use router_discovery::announce_from_router;
 pub use secrets::{get_module_secret_client, get_secret, get_secrets, subscribe_secret_rotations};
-pub use server::{Error as ServeError, serve_module};
+pub use server::{Error as ServeError, serve_module, serve_with_options, ServeOptions};
 pub use state::AppState;
 pub use typed_secret::{Secret, TypedSecretError, get_typed_secret};
 pub use utils::{eprint_json, eprint_pretty_json, print_json, print_pretty_json};

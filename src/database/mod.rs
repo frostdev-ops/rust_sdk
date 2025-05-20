@@ -273,7 +273,7 @@ mod mock {
 
     // Mock transaction for tests
     pub struct MockTransaction {
-        pub connection: Box<dyn DatabaseConnection>,
+        pub connection: Arc<dyn DatabaseConnection>,
     }
 
     #[async_trait]
@@ -311,7 +311,7 @@ mod mock {
 
     // Mock connection wrapper that delegates all calls to the inner connection
     pub struct MockConnection {
-        inner: Box<dyn DatabaseConnection>,
+        inner: Arc<dyn DatabaseConnection>,
     }
 
     #[async_trait]
@@ -339,7 +339,7 @@ mod mock {
         async fn begin_transaction(&self) -> DatabaseResult<Box<dyn DatabaseTransaction>> {
             // Create a mock transaction that uses this connection
             Ok(Box::new(MockTransaction {
-                connection: Box::clone(&self.inner),
+                connection: Arc::clone(&self.inner),
             }))
         }
 
@@ -360,7 +360,7 @@ mod mock {
     pub fn create_mock_db_connection(
         conn: Box<dyn DatabaseConnection>,
     ) -> Box<dyn DatabaseConnection> {
-        Box::new(MockConnection { inner: conn })
+        Box::new(MockConnection { inner: Arc::from(conn) })
     }
 }
 

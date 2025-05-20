@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use base64;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json;
 use sqlx::{MySql, MySqlPool, Row, mysql::MySqlPoolOptions};
 use std::sync::Arc;
@@ -11,6 +11,7 @@ use crate::database::{
 };
 
 /// MySQL implementation of the database connection interface
+#[derive(Clone)]
 pub struct MySqlConnection {
     pool: Arc<MySqlPool>,
 }
@@ -88,7 +89,7 @@ fn convert_mysql_params(
             DatabaseValue::Integer(i) => values.push(serde_json::json!(*i)),
             DatabaseValue::Float(f) => values.push(serde_json::json!(*f)),
             DatabaseValue::Text(s) => values.push(serde_json::Value::String(s.clone())),
-            DatabaseValue::Blob(b) => values.push(serde_json::Value::String(base64::encode(b))),
+            DatabaseValue::Blob(b) => values.push(serde_json::Value::String(STANDARD.encode(b))),
             DatabaseValue::Array(arr) => {
                 let array_json: Vec<serde_json::Value> = arr
                     .iter()
@@ -98,7 +99,7 @@ fn convert_mysql_params(
                         DatabaseValue::Integer(i) => serde_json::json!(*i),
                         DatabaseValue::Float(f) => serde_json::json!(*f),
                         DatabaseValue::Text(s) => serde_json::Value::String(s.clone()),
-                        DatabaseValue::Blob(b) => serde_json::Value::String(base64::encode(b)),
+                        DatabaseValue::Blob(b) => serde_json::Value::String(STANDARD.encode(b)),
                         DatabaseValue::Array(_) => serde_json::Value::Null,
                     })
                     .collect();
@@ -521,9 +522,7 @@ impl DatabaseConnection for MySqlConnection {
         {
             // For integration tests, return a mock transaction that delegates to the connection
             Ok(Box::new(super::mock::MockTransaction {
-                connection: Arc::new(Self {
-                    pool: Arc::clone(&self.pool),
-                }),
+                connection: Arc::new(self.clone()),
             }) as Box<dyn DatabaseTransaction>)
         }
     }
